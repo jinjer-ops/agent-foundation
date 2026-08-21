@@ -1,0 +1,11 @@
+# Local overlays and runtime state must never become public foundation content.
+private/
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.sqlite
+*.sqlite-*
+*.log
+__pycache__/
