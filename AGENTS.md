@@ -27,6 +27,8 @@ This file is the portable baseline for any coding agent. Keep it concise and pro
 ## Efficient working style
 
 - Use focused search before broad reads. For large or unknown-size data, inspect schema, counts, samples, and aggregates rather than dumping the whole dataset into context.
+- Filter at the source rather than after the fact: request only the fields, columns, or ranges needed, prefer a count or an aggregate over a listing, and read long files by the range that matters. Put the logic in a script and surface the result, not the input.
+- When a source cannot be narrowed by range, column, or query, treat that as a signal to change how it is fetched, not as a reason to read all of it.
 - Keep generated artifacts, inputs, and evidence in the project rather than relying on chat history.
 - For work likely to outlive one session, maintain a concise handover with current state, decisions, exact next actions, verification, and blockers.
 - Match the user's language unless the target artifact or repository convention requires another language.
