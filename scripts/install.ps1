@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$FoundationRoot,
     [string]$PrivateRoot = (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'agent-private'),
@@ -45,7 +45,7 @@ $claudeContent = @(
 if ($IncludePrivateOverlay) { $claudeContent += "@$privateRules" }
 Set-Content -LiteralPath (Join-Path $claudeHome 'CLAUDE.md') -Value ($claudeContent -join "`n") -Encoding utf8
 
-foreach ($skillName in @('audit', 'github-publish', 'project-handover')) {
+foreach ($skillName in @('audit', 'codex-claude-handoff', 'github-publish', 'project-handover')) {
     $source = Join-Path (Join-Path $FoundationRoot 'skills') $skillName
     foreach ($skillRoot in @(
         (Join-Path $codexHome 'skills'),
