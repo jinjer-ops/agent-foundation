@@ -58,7 +58,11 @@ foreach ($skillName in @('audit', 'github-publish', 'project-handover')) {
             if ($item.LinkType -ne 'Junction' -and $item.LinkType -ne 'SymbolicLink') {
                 throw "Refusing to replace existing non-link skill: $target"
             }
-            Remove-Item -LiteralPath $target -Force
+            $existingTarget = @($item.Target)[0]
+            if ($existingTarget -ne $source) {
+                throw "Refusing to replace skill link with an unexpected target: $target -> $existingTarget"
+            }
+            continue
         }
         New-Item -ItemType Junction -Path $target -Target $source | Out-Null
     }
