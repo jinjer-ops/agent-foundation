@@ -1,0 +1,24 @@
+{
+  "policy_version": "2026-09-02",
+  "source_of_truth": {
+    "document": "CONVENTIONS.md",
+    "location": "利用者が自分の共通運用ルールを置く場所。無い場合はこの設定が正本になる"
+  },
+  "organization_accounts": [],
+  "anonymized_path_placeholders": [
+    "^<[^>]{1,40}>",
+    "^＜[^＞]{1,40}＞",
+    "^\\{\\{[^}]{1,40}\\}\\}",
+    "^%[A-Za-z_][A-Za-z0-9_]{0,30}%",
+    "^\\$\\{?[A-Za-z_][A-Za-z0-9_]{0,30}\\}?",
+    "^\\.\\.\\.",
+    "^…"
+  ],
+  "conversational_rule_exempt_paths": [],
+  "operational_log_paths": [
+    "(?:^|/)backups/BACKUP_LOG\\.md$",
+    "(?:^|/)backups/[^/]+/BACKUP_LOG\\.md$"
+  ],
+  "receipt_root": "~/.git-publish/receipts",
+  "$comment": "公開してよい既定値。組織固有の判断（許可する組織アカウント等）は空にしてある。自分の設定を使うときは環境変数 GIT_PUBLISH_POLICY にその絶対パスを入れる。"
+}
