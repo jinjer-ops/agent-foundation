@@ -45,12 +45,25 @@ $claudeContent = @(
 if ($IncludePrivateOverlay) { $claudeContent += "@$privateRules" }
 Set-Content -LiteralPath (Join-Path $claudeHome 'CLAUDE.md') -Value ($claudeContent -join "`n") -Encoding utf8
 
-foreach ($skillName in @('audit', 'codex-claude-handoff', 'github-publish', 'project-handover')) {
+# runtime ごとの除外。skill 自体は共有してよいが、配布先を分けるものがある。
+# codex-implement は「ブリーフに従って実装する側」の契約で、設計・引き継ぎ側の契約
+# (codex-claude-handoff) と同じ runtime へ置くと役割の分離が設定上表現されなくなる。
+$skillRuntimeExclusions = @{
+    'codex'  = @('codex-implement')
+    'claude' = @()
+}
+
+foreach ($skillName in @('agent-config-inventory', 'audit', 'codex-claude-handoff',
+                         'codex-implement', 'git-publish', 'github-publish',
+                         'project-handover', 'review-harshly', 'tabular-read')) {
     $source = Join-Path (Join-Path $FoundationRoot 'skills') $skillName
-    foreach ($skillRoot in @(
-        (Join-Path $codexHome 'skills'),
-        (Join-Path $claudeHome 'skills')
-    )) {
+    foreach ($runtime in @('codex', 'claude')) {
+        if ($skillRuntimeExclusions[$runtime] -contains $skillName) { continue }
+        $skillRoot = if ($runtime -eq 'codex') {
+            Join-Path $codexHome 'skills'
+        } else {
+            Join-Path $claudeHome 'skills'
+        }
         New-Item -ItemType Directory -Force -Path $skillRoot | Out-Null
         $target = Join-Path $skillRoot $skillName
         if (Test-Path -LiteralPath $target) {
