@@ -55,7 +55,8 @@ $skillRuntimeExclusions = @{
 
 foreach ($skillName in @('agent-config-inventory', 'audit', 'codex-claude-handoff',
                          'codex-implement', 'git-publish', 'github-publish',
-                         'project-handover', 'review-harshly', 'tabular-read')) {
+                         'product-experience-review', 'project-handover', 'review-harshly',
+                         'tabular-read')) {
     $source = Join-Path (Join-Path $FoundationRoot 'skills') $skillName
     foreach ($runtime in @('codex', 'claude')) {
         if ($skillRuntimeExclusions[$runtime] -contains $skillName) { continue }
