@@ -190,6 +190,57 @@ class PreflightBoundaryTest(unittest.TestCase):
                       "合成の個人著者名が BLOCK されなかった: %s" % data["findings"])
         self.assertEqual(code, 1)
 
+    def _commit_through_platform(self, author, email):
+        """GitHub の画面でマージしたときと同じ署名（コミッターが GitHub）でコミットする。"""
+        env = dict(os.environ,
+                   GIT_AUTHOR_NAME=author, GIT_AUTHOR_EMAIL=email,
+                   GIT_COMMITTER_NAME="GitHub", GIT_COMMITTER_EMAIL="noreply@github.com")
+        p = subprocess.run(["git", "-C", self.repo.path, "commit", "-q", "-m", "merge"],
+                           env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+
+    def test_platform_committer_is_not_a_person(self):
+        """コミッターの「GitHub <noreply@github.com>」で BLOCK しない。
+
+        画面・API でのマージはコミッターをこの署名にする。照合に入れると「GitHub」と書いた文書が
+        すべて P04 になり、メールの前半の「noreply」も同じように当たる。署名のアドレスそのものも
+        人のアドレス（P01）として扱わない。
+        """
+        self._commit_through_platform(SYNTHETIC_AUTHOR, SYNTHETIC_EMAIL)
+        self.repo.write(
+            "docs/review.md",
+            "# 手順\n\nGitHub の画面でマージすると、コミッターは GitHub <noreply@github.com> になる。\n",
+        )
+        self.repo.stage("docs/review.md")
+        code, data = self.repo.run()
+        self.assertNotIn("P04", rules(data, "BLOCK"),
+                         "ホスティング側の署名が BLOCK された: %s" % data["findings"])
+        self.assertEqual(code, 0, "BLOCK: %s" % rules(data, "BLOCK"))
+
+    def test_person_merged_through_platform_still_blocks(self):
+        """コミッターが GitHub でも、同じコミットの著者（人）の名前は照合を続ける。"""
+        person = "Merged Reviewer"
+        self._commit_through_platform(person, "12345+merged-reviewer@users.noreply.github.com")
+        self.repo.write("docs/notes.md", "# 記録\n\n%s が確認した。\n" % person)
+        self.repo.stage("docs/notes.md")
+        code, data = self.repo.run()
+        self.assertIn("P04", rules(data, "BLOCK"),
+                      "GitHub 経由でマージした人の名前が BLOCK されなかった: %s" % data["findings"])
+        self.assertEqual(code, 1)
+
+    def test_personal_address_on_the_platform_domain_still_blocks(self):
+        """除外は署名のアドレス 1 つだけ。同じドメインの人のアドレスは P01 のまま。"""
+        # このファイル自体が P01 に当たらないよう、アドレスは実行時に組み立てる。
+        for local, domain in (("merged.reviewer", "github.com"), ("xnoreply", "github.com"),
+                              ("noreply", "github.community")):
+            address = "%s@%s" % (local, domain)
+            with self.subTest(address=address):
+                self.repo.write("docs/contact.md", "# 連絡先\n\n%s\n" % address)
+                self.repo.stage("docs/contact.md")
+                code, data = self.repo.run()
+                self.assertIn("P01", rules(data, "BLOCK"),
+                              "人のアドレスが BLOCK されなかった: %s" % data["findings"])
+
     def test_reason_is_required_for_allowlist_entries(self):
         """理由の無いエントリを許さない（一般的な著者名の一括除外を防ぐ）。"""
         bad = os.path.join(self.repo.path, "bad_policy.json")
