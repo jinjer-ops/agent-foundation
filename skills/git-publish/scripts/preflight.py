@@ -160,16 +160,28 @@ def placeholder_matcher(policy):
     return re.compile("|".join(pats))
 
 
+# ホスティング側が自分の名前で作るコミットの署名。人ではないので、個人名の照合に使わない。
+# GitHub は画面・API でのマージとウェブ上の編集で、コミッターを「GitHub <noreply@github.com>」にする。
+# これを照合に入れると、「GitHub」と書いた文書がすべて P04 になる。
+# 個人の noreply（<番号>+<名前>@users.noreply.github.com）は人なので、ここに含めない。
+PLATFORM_COMMITTER_EMAILS = frozenset({"noreply@github.com"})
+
+
 def tracked_authors(repo, policy):
     """このリポの著者名・メールを集める（本文に個人名が残っていないかの照合用）。
 
     **一般的な著者名の一括除外はしない。** policy configuration が理由付きで許可した
-    組織アカウント識別子だけを除外する。
+    組織アカウント識別子と、ホスティング側の署名（`PLATFORM_COMMITTER_EMAILS`）だけを除外する。
+    名前とメールは組で読み、ホスティング側の署名の組だけを落とす（同じコミットの著者は残す）。
     """
     raw = set()
-    rc, out, _ = git(repo, "log", "-n", "300", "--format=%an%n%ae%n%cn%n%ce")
+    rc, out, _ = git(repo, "log", "-n", "300", "--format=%an%x09%ae%n%cn%x09%ce")
     if rc == 0:
-        raw.update(line.strip() for line in out.splitlines())
+        for line in out.splitlines():
+            name, _, email = line.partition("\t")
+            if email.strip().lower() in PLATFORM_COMMITTER_EMAILS:
+                continue
+            raw.update(v.strip() for v in (name, email) if v.strip())
     for key in ("user.name", "user.email"):
         rc, out, _ = git(repo, "config", key)
         if rc == 0 and out.strip():
@@ -234,6 +246,8 @@ SECRET_PATH_RULES = [
 PII_RULES = [
     (
         "P01",
+        # noreply@github.com はホスティング側の署名（PLATFORM_COMMITTER_EMAILS）で、人のアドレスではない。
+        r"(?<![A-Za-z0-9._%+\-])(?!noreply@github\.com\b)"
         r"[A-Za-z0-9._%+\-]+@(?!example\.(?:com|org|net)|test\.|localhost|users\.noreply\.github\.com|noreply\.)[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
         "メールアドレス（個人特定）。部署名・ロール名に置き換える",
     ),
