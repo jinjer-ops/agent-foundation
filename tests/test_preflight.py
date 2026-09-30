@@ -63,6 +63,11 @@ def conversational_phrase() -> str:
     return chr(0x4ECA) + chr(0x56DE)
 
 
+def synthetic_access_key() -> str:
+    """S02（アクセスキーの形）に一致する合成の文字列を実行時に組み立てる。実在のキーではない。"""
+    return "AK" + "IA" + "Z" * 16
+
+
 def windows_user_path(user: str) -> str:
     """`C:\\Users\\<user>\\work` 相当の文字列を実行時に組み立てる。
 
@@ -104,6 +109,10 @@ class Repo:
 
     def stage(self, *rels):
         self.git("add", "--", *rels)
+
+    def commit(self, message: str = "base"):
+        p = self.git("commit", "-q", "-m", message)
+        assert p.returncode == 0, p.stderr.decode("utf-8", "replace")
 
     def run(self, scope: str = "staged", policy: str | None = None):
         p = subprocess.run(
@@ -317,6 +326,58 @@ class PreflightBoundaryTest(unittest.TestCase):
         self.assertIn("L01", rules(data, "BLOCK"),
                       "実在パスが素通りした: %s" % data["findings"])
         self.assertEqual(code, 1)
+
+    # --- 3b. staged では文体の規則を、差分で足した・変えた行だけに掛ける ------
+    def _commit_history(self, body: str):
+        """既存の履歴の文書を 1 つコミットしておく（3 行: 見出し・空行・本文）。"""
+        self.repo.write("docs/history.md", "# 記録\n\n" + body + "\n")
+        self.repo.stage("docs/history.md")
+        self.repo.commit()
+
+    def _append_history(self, line: str):
+        path = os.path.join(self.repo.path, "docs", "history.md")
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
+            f.write(line + "\n")
+        self.repo.stage("docs/history.md")
+
+    def test_staged_ignores_wording_on_unchanged_lines(self):
+        """既存の行の言い回しは、書き足したコミットで問わない（all では従来どおり問う）。"""
+        self._commit_history("- 2026-09-01: %sの分を記録した" % conversational_phrase())
+        self._append_history("- 2026-09-02: 件数を記録した")
+        code, data = self.repo.run()
+        self.assertNotIn("C01", rules(data, "BLOCK"),
+                         "変えていない行の C01 で止まった: %s" % data["findings"])
+        self.assertEqual(code, 0, data["findings"])
+        code, data = self.repo.run(scope="all")
+        self.assertIn("C01", rules(data, "BLOCK"),
+                      "--scope all で既存の行の C01 が出なくなった: %s" % data["findings"])
+
+    def test_staged_blocks_wording_on_added_line(self):
+        self._commit_history("- 2026-09-01: 件数を記録した")
+        self._append_history("- 2026-09-02: %sの分を記録した" % conversational_phrase())
+        code, data = self.repo.run()
+        hits = [f for f in data["findings"] if f["rule"] == "C01" and f["severity"] == "BLOCK"]
+        self.assertEqual([f["line"] for f in hits], [4],
+                         "書き足した行（4 行目）の C01 が BLOCK されなかった: %s" % data["findings"])
+        self.assertEqual(code, 1)
+
+    def test_staged_still_blocks_secret_on_unchanged_line(self):
+        """秘密情報は、変えていない行でも止める（ファイル全体に掛ける）。"""
+        self._commit_history("- key: %s" % synthetic_access_key())
+        self._append_history("- 2026-09-02: 件数を記録した")
+        code, data = self.repo.run()
+        self.assertIn("S02", rules(data, "BLOCK"),
+                      "変えていない行の秘密情報が素通りした: %s" % data["findings"])
+        self.assertEqual(code, 1)
+
+    def test_staged_rename_without_edit_does_not_recheck_wording(self):
+        """名前を変えただけ（中身は同じ）のファイルは、足した行が無いので文体の規則を掛けない。"""
+        self._commit_history("- 2026-09-01: %sの分を記録した" % conversational_phrase())
+        self.repo.git("mv", "docs/history.md", "docs/history_2026.md")
+        code, data = self.repo.run()
+        self.assertNotIn("C01", rules(data, "BLOCK"),
+                         "名前の変更だけで C01 が出た: %s" % data["findings"])
+        self.assertEqual(code, 0, data["findings"])
 
     # --- 4. 運用ログは通り、backups/ の複製本体は BLOCK --------------------
     def test_operational_log_passes(self):

@@ -11,7 +11,7 @@
 ②本リポジトリの policy configuration を更新する ③必要ならスクリプトを更新する、である。
 
 使い方:
-  python preflight.py --repo <repo>                        # index（stage 済み）を検査
+  python preflight.py --repo <repo>                        # index（stage 済み）を検査。文体の規則は変えた行だけ
   python preflight.py --repo <repo> --scope all            # 追跡ファイル全体を検査（初回公開時）
   python preflight.py --repo <repo> --json                 # 機械可読出力
   python preflight.py --repo <repo> --receipt-dir <dir>    # レシートの出力先（既定は policy の receipt_root）
@@ -312,6 +312,8 @@ def compile_rules():
 
 CONTENT_RULES = compile_rules()
 SECRET_IDS = {rid for rid, _, _ in SECRET_RULES}
+# 文体の規則。--scope staged では、差分で足した・変えた行だけに掛ける（staged_changed_lines）。
+WORDING_IDS = {rid for rid, _, _, _ in CONV_RULES}
 
 TEXT_DOC = re.compile(r"\.(?:md|markdown|txt|rst|adoc)$", re.I)
 SKIP_CONTENT = re.compile(r"\.(?:png|jpe?g|gif|svg|ico|pdf|zip|gz|xlsx|xls|pptx|docx|parquet|db|sqlite3?|woff2?|ttf|eot|mp4|jar|class|pyc)$", re.I)
@@ -339,6 +341,85 @@ def collect_paths(repo, scope):
     if rc != 0:
         return None, None, err.strip()
     return [p for p in out.split("\0") if p], prefix, None
+
+
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_GIT_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def _unquote_git_path(text):
+    """git が C の書式で引用したパス（"…"、8 進のバイト列を含む）を元に戻す。"""
+    if len(text) < 2 or text[0] != '"' or text[-1] != '"':
+        return text
+    body, out, i = text[1:-1], bytearray(), 0
+    while i < len(body):
+        if body[i] == "\\" and i + 1 < len(body):
+            nxt = body[i + 1]
+            if nxt in _GIT_ESCAPES:
+                out.append(_GIT_ESCAPES[nxt])
+                i += 2
+                continue
+            if re.match(r"[0-7]{3}", body[i + 1 : i + 4]):
+                out.append(int(body[i + 1 : i + 4], 8))
+                i += 4
+                continue
+        out += body[i].encode("utf-8")
+        i += 1
+    return out.decode("utf-8", "replace")
+
+
+def _header_path(rest, prefix):
+    """`--- a/…` `+++ b/…` `rename to …` の値からパスを取り出す。"""
+    rest = _unquote_git_path(rest[:-1] if rest.endswith("\t") else rest)
+    return rest[len(prefix):] if prefix and rest.startswith(prefix) else rest
+
+
+def staged_changed_lines(repo):
+    """staged の差分で足した・変えた行の番号（index の内容での行番号）を、パスごとに返す。
+
+    新しいファイルは全部の行が入る。名前の変更だけで中身を変えていないファイルは空になる。
+    番号を取れなかったパスは戻り値に入らない（呼び出し側はファイル全体に規則を掛ける）。
+    """
+    rc, out, _ = git(
+        repo, "diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--no-textconv",
+        "--text", "--src-prefix=a/", "--dst-prefix=b/", "--diff-filter=ACMR",
+    )
+    if rc != 0:
+        return {}
+    result, path, lines, in_hunk = {}, None, set(), False
+    for raw in out.split("\n"):
+        if raw.startswith("diff --git "):
+            if path is not None:
+                result[path] = lines
+            path, lines, in_hunk = None, set(), False
+            rest = raw[len("diff --git "):]
+            half = (len(rest) - 5) // 2  # 引用の無い `a/<p> b/<p>`（名前を変えていないとき）
+            if half > 0 and rest == "a/" + rest[2 : 2 + half] + " b/" + rest[2 : 2 + half]:
+                path = rest[2 : 2 + half]
+            continue
+        m = _HUNK.match(raw)  # 本文の行は先頭に + - \ が付くので、行頭の @@ は必ず見出し
+        if m:
+            in_hunk = True
+            start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+            lines.update(range(start, start + count))
+            continue
+        if in_hunk:
+            continue  # 本文の行（例: 足した行「++ …」は「+++ …」と出る）を見出しとして読まない
+        if raw.startswith("+++ ") and raw != "+++ /dev/null":
+            path = _header_path(raw[4:], "b/")
+        elif raw.startswith("rename to ") or raw.startswith("copy to "):
+            path = _header_path(raw.split(" to ", 1)[1], "")
+    if path is not None:
+        result[path] = lines
+    return result
+
+
+def _git_lines(text):
+    """git の差分と同じ数え方（改行 LF で区切る）で行に分ける。行末の CR は落とす。"""
+    parts = text.split("\n")
+    if parts and parts[-1] == "":
+        parts.pop()
+    return [p[:-1] if p.endswith("\r") else p for p in parts]
 
 
 def path_rule_exempt(policy):
@@ -372,7 +453,11 @@ def mask(text):
     return t[:6] + "…" + t[-2:] + f" [{len(t)}字]"
 
 
-def check_content(path, blob, findings, authors, policy, placeholder):
+def check_content(path, blob, findings, authors, policy, placeholder, wording_lines=None):
+    """本文の検査。wording_lines を渡すと、文体の規則（C01〜C09）はその行番号だけに掛ける。
+
+    秘密情報・個人情報・実在パス・構成・エンコーディングの規則は、常にファイル全体に掛ける。
+    """
     if blob is None or SKIP_CONTENT.search(path):
         return 0
     if len(blob) > LARGE_FILE_BYTES:
@@ -401,11 +486,15 @@ def check_content(path, blob, findings, authors, policy, placeholder):
     brief_prefixes = tuple(policy.get("conversational_rule_exempt_paths") or ())
     is_brief = bool(brief_prefixes) and path.startswith(brief_prefixes)
     suppressed = 0
-    for lineno, line in enumerate(text.splitlines(), 1):
+    # 行番号を差分と突き合わせるときは、git と同じ数え方で行に分ける
+    lines = text.splitlines() if wording_lines is None else _git_lines(text)
+    for lineno, line in enumerate(lines, 1):
         if SUPPRESS_MARK in line:
             suppressed += 1
             continue
         for rid, (pat, sev, msg) in CONTENT_RULES.items():
+            if wording_lines is not None and rid in WORDING_IDS and lineno not in wording_lines:
+                continue  # このコミットで変えていない行の言い回しは問わない
             if rid == "C09" and is_ai_doc:
                 continue
             if rid == "C01" and is_brief:
@@ -565,9 +654,13 @@ def main():
         check_path(p, findings, exempt)
     blobs = read_blobs(root, [f"{prefix}{p}" for p in paths])
     authors = tracked_authors(root, policy)
+    # staged は「これからコミットする差分」の検査なので、文体の規則は変えた行だけに掛ける。
+    # 行番号を取れなかったファイルは None（ファイル全体に掛ける）。all と head は従来どおり全体。
+    changed = staged_changed_lines(root) if args.scope == "staged" else {}
     for p in paths:
         suppressed += check_content(
-            p, blobs.get(f"{prefix}{p}"), findings, authors, policy, placeholder
+            p, blobs.get(f"{prefix}{p}"), findings, authors, policy, placeholder,
+            wording_lines=changed.get(p),
         )
     check_repo_shape(root, all_paths, findings)
 
